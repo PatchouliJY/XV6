@@ -15,7 +15,7 @@
 // the kernel uses physical memory thus:
 // 80000000 -- entry.S, then kernel text and data
 // end -- start of kernel page allocation area
-// PHYSTOP -- end RAM used by the kernel
+// PHYSTOP -- end RAM used by the kernel 0x86400000
 
 // qemu puts UART registers here in physical memory.
 #define UART0 0x10000000L

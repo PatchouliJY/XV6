@@ -1,4 +1,4 @@
-// which hart (core) is this?
+// which hart (core) is this? hart: HARdware Thread
 static inline uint64
 r_mhartid()
 {
@@ -326,6 +326,7 @@ sfence_vma()
 #define PGROUNDUP(sz)  (((sz)+PGSIZE-1) & ~(PGSIZE-1))
 #define PGROUNDDOWN(a) (((a)) & ~(PGSIZE-1))
 
+// PTE flags
 #define PTE_V (1L << 0) // valid
 #define PTE_R (1L << 1)
 #define PTE_W (1L << 2)
@@ -335,8 +336,12 @@ sfence_vma()
 // shift a physical address to the right place for a PTE.
 #define PA2PTE(pa) ((((uint64)pa) >> 12) << 10)
 
+// pte to pa pte: |PPN|Flags| -> |PPN|Offset|
+//                |44 | 10  | -> |44 | 12   |
 #define PTE2PA(pte) (((pte) >> 10) << 12)
 
+// pte: |PPN|Flags|
+//      | 44| 10  | 11,1111,1111 -> 0x3ff
 #define PTE_FLAGS(pte) ((pte) & 0x3FF)
 
 // extract the three 9-bit page table indices from a virtual address.
