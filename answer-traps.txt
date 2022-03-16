@@ -1,0 +1,22 @@
+Which registers contain arguments to functions? For example, which register holds 13 in main's call to printf?
+13 is in a2
+
+Where is the call to function f in the assembly code for main? Where is the call to g? (Hint: the compiler may inline functions.)
+the result 12 is in a1 directly, it seems that main compute this inline and store it
+
+At what address is the function printf located?
+0000000000000630 <printf>:
+
+What value is in the register ra just after the jalr to printf in main?
+jump and link register: jalr rd, offset(rs1)
+pc + 4 -> rd then jump to offset(rs1)
+0x30 -> 0x38 -> 0x5e -> 0x68 ->0x70
+
+unsigned int i = 0x00646c72; 
+printf("H%x Wo%s", 57616, &i);
+输出的内容为 HE110 World  小端表示，57616 -> 0xE110
+                                0x00646c72 -> 72 c6 64 00
+                                               r  l  d  \0
+
+出现未定义行为，输出取决于之前a2中的数据
+
