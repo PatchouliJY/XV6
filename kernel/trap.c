@@ -65,6 +65,24 @@ usertrap(void)
     intr_on();
 
     syscall();
+  } else if(r_scause() == 13 || r_scause() == 15) {
+    // page fault
+    uint64 pagefault_va = r_stval();
+    if(pagefault_va < p->sz && pagefault_va >= PGROUNDDOWN(p->trapframe->sp)) {
+      char* mem = kalloc();
+      if(mem == 0) {
+        p->killed = 1;
+      } else {
+        memset(mem, 0, PGSIZE);
+        pagefault_va = PGROUNDDOWN(pagefault_va);
+        if(mappages(p->pagetable, pagefault_va, PGSIZE, (uint64)mem, PTE_W | PTE_R | PTE_U | PTE_X) != 0) {
+          kfree(mem);
+          p->killed = 1;
+        }
+      }
+    } else {
+      p->killed = 1;
+    }
   } else if((which_dev = devintr()) != 0){
     // ok
   } else {
@@ -77,18 +95,8 @@ usertrap(void)
     exit(-1);
 
   // give up the CPU if this is a timer interrupt.
-  if(which_dev == 2) {
-    if(p->interval != 0) {
-      p->ticks += 1;
-      if(p->ticks == p->interval && p->is_alarm == 0) {
-        printf("timer intr :pid : %d, ticks: %d\n", p->pid, p->ticks);
-        memmove(p->alarm_trapframe, p->trapframe, sizeof(struct trapframe));
-        p->trapframe->epc = p->handler;
-        p->is_alarm = 1;
-      }
-    }
+  if(which_dev == 2)
     yield();
-  }
 
   usertrapret();
 }
