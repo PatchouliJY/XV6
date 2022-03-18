@@ -15,7 +15,6 @@ extern char etext[];  // kernel.ld sets this to end of kernel code.
 
 extern char trampoline[]; // trampoline.S
 
-
 /*
  * create a direct-map page table for the kernel.
  */
@@ -30,9 +29,6 @@ kvminit()
 
   // virtio mmio disk interface
   kvmmap(VIRTIO0, VIRTIO0, PGSIZE, PTE_R | PTE_W);
-
-  // CLINT
-  kvmmap(CLINT, CLINT, 0x10000, PTE_R | PTE_W);
 
   // PLIC
   kvmmap(PLIC, PLIC, 0x400000, PTE_R | PTE_W);
@@ -64,12 +60,12 @@ kvminithart()
 // The risc-v Sv39 scheme has three levels of page-table
 // pages. A page-table page contains 512 64-bit PTEs.
 // A 64-bit virtual address is split into five fields:
-  // 39..63 -- must be zero.
-  // 30..38 -- 9 bits of level-2 index.
-  // 21..29 -- 9 bits of level-1 index.
-  // 12..20 -- 9 bits of level-0 index.
-  //  0..11 -- 12 bits of byte offset within the page.
-pte_t *
+//   39..63 -- must be zero.
+//   30..38 -- 9 bits of level-2 index.
+//   21..29 -- 9 bits of level-1 index.
+//   12..20 -- 9 bits of level-0 index.
+//    0..11 -- 12 bits of byte offset within the page.
+static pte_t *
 walk(pagetable_t pagetable, uint64 va, int alloc)
 {
   if(va >= MAXVA)
@@ -120,26 +116,6 @@ kvmmap(uint64 va, uint64 pa, uint64 sz, int perm)
 {
   if(mappages(kernel_pagetable, va, sz, pa, perm) != 0)
     panic("kvmmap");
-}
-
-// translate a kernel virtual address to
-// a physical address. only needed for
-// addresses on the stack.
-// assumes va is page aligned.
-uint64
-kvmpa(uint64 va)
-{
-  uint64 off = va % PGSIZE;
-  pte_t *pte;
-  uint64 pa;
-  
-  pte = walk(kernel_pagetable, va, 0);
-  if(pte == 0)
-    panic("kvmpa");
-  if((*pte & PTE_V) == 0)
-    panic("kvmpa");
-  pa = PTE2PA(*pte);
-  return pa+off;
 }
 
 // Create PTEs for virtual addresses starting at va that refer to
@@ -312,7 +288,7 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   pte_t *pte;
   uint64 pa, i;
   uint flags;
-  // char *mem;
+  char *mem;
 
   for(i = 0; i < sz; i += PGSIZE){
     if((pte = walk(old, i, 0)) == 0)
@@ -320,15 +296,14 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
     if((*pte & PTE_V) == 0)
       panic("uvmcopy: page not present");
     pa = PTE2PA(*pte);
-    flags = PTE_FLAGS(*pte) & ~(PTE_W);
-    // if((mem = kalloc()) == 0)
-    //   goto err;
-    // memmove(mem, (char*)pa, PGSIZE);
-    if(mappages(new, i, PGSIZE, (uint64)pa, flags) != 0){
+    flags = PTE_FLAGS(*pte);
+    if((mem = kalloc()) == 0)
+      goto err;
+    memmove(mem, (char*)pa, PGSIZE);
+    if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
+      kfree(mem);
       goto err;
     }
-    increase_refcnt(pa);
-    *pte &= ~(PTE_W);
   }
   return 0;
 
@@ -360,23 +335,9 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 
   while(len > 0){
     va0 = PGROUNDDOWN(dstva);
-
-    if(va0 >= MAXVA) return -1;
-    pte_t* pte = walk(pagetable, va0, 0);
-    if(pte == 0 || (*pte & PTE_U) == 0 || (*pte & PTE_V) == 0) 
+    pa0 = walkaddr(pagetable, va0);
+    if(pa0 == 0)
       return -1;
-
-    if((*pte & PTE_W) == 0) {
-      if (cowfault(pagetable, va0) < 0) {
-        return -1;
-      }
-    }
-
-    // pa0 = walkaddr(pagetable, va0);
-    // if(pa0 == 0)
-    //   return -1;
-    pa0 = PTE2PA(*pte);
-    if (pa0 == 0) return -1;
     n = PGSIZE - (dstva - va0);
     if(n > len)
       n = len;
