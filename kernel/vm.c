@@ -5,8 +5,6 @@
 #include "riscv.h"
 #include "defs.h"
 #include "fs.h"
-#include "spinlock.h"
-#include "proc.h"
 
 /*
  * the kernel's page table.
@@ -16,6 +14,7 @@ pagetable_t kernel_pagetable;
 extern char etext[];  // kernel.ld sets this to end of kernel code.
 
 extern char trampoline[]; // trampoline.S
+
 
 /*
  * create a direct-map page table for the kernel.
@@ -65,11 +64,11 @@ kvminithart()
 // The risc-v Sv39 scheme has three levels of page-table
 // pages. A page-table page contains 512 64-bit PTEs.
 // A 64-bit virtual address is split into five fields:
-//   39..63 -- must be zero.
-//   30..38 -- 9 bits of level-2 index.
-//   21..29 -- 9 bits of level-1 index.
-//   12..20 -- 9 bits of level-0 index.
-//    0..11 -- 12 bits of byte offset within the page.
+  // 39..63 -- must be zero.
+  // 30..38 -- 9 bits of level-2 index.
+  // 21..29 -- 9 bits of level-1 index.
+  // 12..20 -- 9 bits of level-0 index.
+  //  0..11 -- 12 bits of byte offset within the page.
 pte_t *
 walk(pagetable_t pagetable, uint64 va, int alloc)
 {
@@ -103,31 +102,10 @@ walkaddr(pagetable_t pagetable, uint64 va)
     return 0;
 
   pte = walk(pagetable, va, 0);
-  // if(pte == 0)
-  //   return 0;
-  // if((*pte & PTE_V) == 0)
-  //   return 0;
-  struct proc* p = myproc();
-  if(pte == 0 || ((*pte) & PTE_V) == 0) {
-    // 判断越界条件，va大于现有的p->sz 或者在sp指针之下，因为栈是向下增加的，里面的范围是左闭右开[begin, end)
-    if (va < p->sz && va >= PGROUNDDOWN(p->trapframe->sp)) {
-      char* mem = kalloc();
-      if (mem == 0) {
-        return 0;
-      } else {
-        memset(mem, 0, PGSIZE);
-        va = PGROUNDDOWN(va);
-        if ((mappages(p->pagetable, va, PGSIZE, (uint64)mem, PTE_W | PTE_R | PTE_U | PTE_X)) != 0) {
-          kfree(mem);
-          return 0;
-        }
-        pte = walk(pagetable, va, 0);
-      }
-    } else {
-      return 0;
-    }
-
-  }
+  if(pte == 0)
+    return 0;
+  if((*pte & PTE_V) == 0)
+    return 0;
   if((*pte & PTE_U) == 0)
     return 0;
   pa = PTE2PA(*pte);
@@ -204,13 +182,9 @@ uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
 
   for(a = va; a < va + npages*PGSIZE; a += PGSIZE){
     if((pte = walk(pagetable, a, 0)) == 0)
-      continue;
-      // panic("uvmunmap: walk");
-    if((*pte & PTE_V) == 0) {
-      *pte = 0;
-      continue;
-    }
-      // panic("uvmunmap: not mapped");
+      panic("uvmunmap: walk");
+    if((*pte & PTE_V) == 0)
+      panic("uvmunmap: not mapped");
     if(PTE_FLAGS(*pte) == PTE_V)
       panic("uvmunmap: not a leaf");
     if(do_free){
@@ -338,24 +312,23 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   pte_t *pte;
   uint64 pa, i;
   uint flags;
-  char *mem;
+  // char *mem;
 
   for(i = 0; i < sz; i += PGSIZE){
     if((pte = walk(old, i, 0)) == 0)
-      continue;
-      // panic("uvmcopy: pte should exist");
+      panic("uvmcopy: pte should exist");
     if((*pte & PTE_V) == 0)
-      continue;
-      // panic("uvmcopy: page not present");
+      panic("uvmcopy: page not present");
     pa = PTE2PA(*pte);
-    flags = PTE_FLAGS(*pte);
-    if((mem = kalloc()) == 0)
-      goto err;
-    memmove(mem, (char*)pa, PGSIZE);
-    if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
-      kfree(mem);
+    flags = PTE_FLAGS(*pte) & ~(PTE_W);
+    // if((mem = kalloc()) == 0)
+    //   goto err;
+    // memmove(mem, (char*)pa, PGSIZE);
+    if(mappages(new, i, PGSIZE, (uint64)pa, flags) != 0){
       goto err;
     }
+    increase_refcnt(pa);
+    *pte &= ~(PTE_W);
   }
   return 0;
 
@@ -387,9 +360,23 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 
   while(len > 0){
     va0 = PGROUNDDOWN(dstva);
-    pa0 = walkaddr(pagetable, va0);
-    if(pa0 == 0)
+
+    if(va0 >= MAXVA) return -1;
+    pte_t* pte = walk(pagetable, va0, 0);
+    if(pte == 0 || (*pte & PTE_U) == 0 || (*pte & PTE_V) == 0) 
       return -1;
+
+    if((*pte & PTE_W) == 0) {
+      if (cowfault(pagetable, va0) < 0) {
+        return -1;
+      }
+    }
+
+    // pa0 = walkaddr(pagetable, va0);
+    // if(pa0 == 0)
+    //   return -1;
+    pa0 = PTE2PA(*pte);
+    if (pa0 == 0) return -1;
     n = PGSIZE - (dstva - va0);
     if(n > len)
       n = len;
