@@ -134,6 +134,8 @@ found:
   p->context.ra = (uint64)forkret;
   p->context.sp = p->kstack + PGSIZE;
 
+  memset(&p->vmas, 0, sizeof(p->vmas));
+
   return p;
 }
 
@@ -300,6 +302,15 @@ fork(void)
 
   pid = np->pid;
 
+  // copy the vma from parent
+  for (i = 0; i < MAXVMA; i++) {
+    // in multi-process, should assigment first, on the file->ref may less than 1
+    np->vmas[i] = p->vmas[i];
+    if (p->vmas[i].used) {
+      filedup(p->vmas[i].file);
+    }
+  }
+
   np->state = RUNNABLE;
 
   release(&np->lock);
@@ -343,6 +354,12 @@ exit(int status)
 
   if(p == initproc)
     panic("init exiting");
+
+  for(int i = 0; i < MAXVMA; i++) {
+    if (p->vmas[i].used) {
+      fileclose(p->vmas[i].file);
+    }
+  }
 
   // Close all open files.
   for(int fd = 0; fd < NOFILE; fd++){

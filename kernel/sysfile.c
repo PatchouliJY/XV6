@@ -322,31 +322,6 @@ sys_open(void)
     return -1;
   }
 
-  // symlink
-  if(ip->type == T_SYMLINK && !(omode & O_NOFOLLOW)){
-    const int MAX_CYCLE = 10;
-    int cnt = 0;
-    char target[MAXPATH];
-    // until not symlink
-    while(ip->type == T_SYMLINK) {
-      if(cnt >= MAX_CYCLE) {
-        iunlockput(ip);
-        end_op();
-        return -1;
-      }
-
-      cnt += 1;
-      memset(target, 0, MAXPATH);
-      readi(ip, 0 , (uint64)target, 0, MAXPATH);
-      iunlockput(ip);
-      if((ip = namei(target)) == 0) {
-        end_op();
-        return -1;
-      }
-      ilock(ip);
-    }
-  }
-
   if((f = filealloc()) == 0 || (fd = fdalloc(f)) < 0){
     if(f)
       fileclose(f);
@@ -511,29 +486,95 @@ sys_pipe(void)
 }
 
 uint64
-sys_symlink(void) 
-{
-  char target[MAXPATH], path[MAXPATH];
-  if (argstr(0, target, MAXPATH) < 0 || argstr(1, path, MAXPATH) < 0) {
+sys_mmap(void) {
+  uint64 err = 0xffffffffffffffff;
+
+  struct proc* p = myproc();
+  struct vma_t* vma = 0;
+
+  int i;
+  for(i = 0; i < MAXVMA; i++) {
+    if(!p->vmas[i].used) {
+      vma = &p->vmas[i];
+      break;
+    }
+  }
+  if(!vma) return err;
+  int fd;
+  if (argaddr(0, &vma->addr) < 0 || 
+      argint(1, &vma->length) < 0 ||
+      argint(2, &vma->prot) < 0 || 
+      argint(3, &vma->flags) || 
+      argfd(4, &fd, &vma->file) < 0 || 
+      argint(5, &vma->offset) < 0) {
+        return err;
+  }
+
+  if(p->sz + vma->length > MAXVA) 
+    return err;
+
+  if ((vma->flags & MAP_SHARED) && (vma->prot & PROT_READ) && !vma->file->readable) {
+    return err;
+  }
+  if ((vma->flags & MAP_SHARED) && (vma->prot & PROT_WRITE) && !vma->file->writable) {
+    return err;
+  }
+
+  vma->used = 1;
+  vma->addr = p->sz;
+  p->sz += PGROUNDUP(vma->length);
+  filedup(vma->file);
+
+  return vma->addr;
+}
+
+// from pagetable to free pte where mmap reflection
+void munmap(pagetable_t pagetable, struct vma_t* vma, uint64 va, int n) {
+  int a;
+  for(a = va; a < va + n * PGSIZE; a += PGSIZE) {
+    pte_t* pte = walk(pagetable, a, 0);
+    if ((vma->flags & MAP_SHARED) && (PTE_FLAGS(*pte) & PTE_D)) {
+      filewrite(vma->file, a, PGSIZE);
+    }
+  }
+}
+
+uint64 sys_munmap(void) {
+  uint64 addr;
+  int length;
+  if (argaddr(0, &addr) < 0 || argint(1, &length) < 0) {
     return -1;
   }
-  
-  struct inode* ip_path;
-  begin_op();
 
-  ip_path = create(path, T_SYMLINK, 0, 0);
-  if(ip_path == 0) {
-    end_op();
-    return -1;
+  struct vma_t* vma = 0;
+  struct proc* p = myproc();
+
+  // find the vma, munmap's addr must be start addr or end addr
+  int i;
+  for(i = 0; i < MAXVMA; i++) {
+    if (p->vmas[i].addr == addr || p->vmas[i].addr + p->vmas[i].length == addr + length) {
+      vma = &p->vmas[i];
+      break;
+    }
   }
 
-  if(writei(ip_path, 0, (uint64)target, 0, MAXPATH) < MAXPATH) {
-    iunlockput(ip_path);
-    end_op();
+  if (!vma)
     return -1;
+
+  // free all the content
+  munmap(p->pagetable, vma, addr, length / PGSIZE);
+
+  if (vma->addr == addr) {
+    vma->addr += length;
+  } else if (vma->addr + vma->length == addr + length) {
+    vma->addr = PGROUNDDOWN(addr);
   }
 
-  iunlockput(ip_path);
-  end_op();
+  vma->length -= length;
+  if (vma->length == 0) {
+    vma->used = 0;
+    fileclose(vma->file);
+  }
+
   return 0;
 }

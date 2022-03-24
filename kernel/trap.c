@@ -5,6 +5,10 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
+#include "sleeplock.h"
+#include "fs.h"
+#include "file.h"
+#include "fcntl.h"
 
 struct spinlock tickslock;
 uint ticks;
@@ -67,7 +71,25 @@ usertrap(void)
     syscall();
   } else if((which_dev = devintr()) != 0){
     // ok
-  } else {
+  } else if(r_scause() == 13 || r_scause() == 15) {
+    uint64 va = r_stval();
+
+    struct proc* p = myproc();
+    struct vma_t* vma = 0;
+    int i;
+    for (i = 0; i < MAXVMA; i++) {
+      if(p->vmas[i].addr <= va && va < p->vmas[i].addr + p->vmas[i].length) {
+        vma = &p->vmas[i];
+      }
+    }
+
+    if(!vma) {
+      p->killed = 1;
+    } else if(handlepagefault(&p->pagetable, va, vma) < 0) {
+      p->killed = 1;
+    }
+
+  }else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
     p->killed = 1;
@@ -81,6 +103,33 @@ usertrap(void)
     yield();
 
   usertrapret();
+}
+
+int
+handlepagefault(pagetable_t* pagetable, uint64 va, struct vma_t* vma) 
+{
+  va = PGROUNDDOWN(va);
+  char* pa;
+  if((pa = kalloc()) == 0) {
+    panic("page fault: not enough memory\n");
+    return -1;
+  }
+  memset(pa, 0, PGSIZE);
+  acquiresleep(&vma->file->ip->lock);
+
+  readi(vma->file->ip, 0, (uint64)pa, va - vma->addr, PGSIZE); // in fact va - vma->addr == PGSIZE or 0
+  releasesleep(&vma->file->ip->lock);
+
+  int perm = PTE_U;
+  if (vma->prot & PROT_READ) perm = perm | PTE_R;
+  if (vma->prot & PROT_WRITE) perm = perm | PTE_W;
+  if (mappages(*pagetable, va, PGSIZE, (uint64)pa, perm) < 0) {
+    kfree(pa);
+    return -1;
+  }
+
+  return 0;
+
 }
 
 //
